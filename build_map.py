@@ -363,10 +363,6 @@ def main():
     )
 
     m = folium.Map(location=[40.705, -73.96], zoom_start=10, tiles=None, control_scale=True)
-    if BASEMAP in BASEMAPS:
-        url, attr, extra = BASEMAPS[BASEMAP]
-        folium.TileLayer(tiles=url, attr=attr, name="Basemap", control=False,
-                         referrer_policy="strict-origin", **extra).add_to(m)
     m.get_root().header.add_child(Element(CSS))
     blob = json.dumps(cfg, separators=(",", ":")).replace("</", "<\\/")
     m.get_root().script.add_child(Element(JS.replace("__CFG__", blob).replace("__MAPNAME__", m.get_name())))
