@@ -94,7 +94,6 @@ def label_point(coords, gtype):
 CSS = """<style>
 .panel{background:#fff;border:1px solid #c5ccd3;border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.2);
  font:13px/1.35 Arial,sans-serif;padding:10px 12px;color:#1f2933}
-.title h1{font-size:17px;margin:0 0 2px}.title p{margin:0;color:#52606d}
 .legend{width:290px;max-height:calc(100vh - 30px);overflow-y:auto}
 .legend h2{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#52606d;margin:12px 0 4px}
 .legend h2:first-child{margin-top:0}
@@ -112,7 +111,7 @@ CSS = """<style>
 .info th{text-align:left;font-weight:normal;color:#52606d;padding:2px 10px 2px 0;vertical-align:top;white-space:nowrap}
 .info td{padding:2px 0}
 .chip{display:inline-block;padding:1px 9px;border-radius:10px;font-weight:600;border:1px solid rgba(0,0,0,.25)}
-@media(max-width:700px){.legend{width:210px;max-height:55vh;font-size:12px}.title h1{font-size:14px}.title p{display:none}}
+@media(max-width:700px){.legend{width:210px;max-height:55vh;font-size:12px}}
 </style>"""
 
 JS = r"""
@@ -288,15 +287,6 @@ function init(map) {
   };
   legend.addTo(map);
 
-  const title = L.control({position: 'topleft'});
-  title.onAdd = function () {
-    const d = L.DomUtil.create('div', 'panel title');
-    d.innerHTML = '<h1>' + esc(CFG.title) + '</h1><p>' + esc(CFG.subtitle) + '</p>';
-    L.DomEvent.disableClickPropagation(d);
-    return d;
-  };
-  title.addTo(map);
-
   staticCounts();
   redraw();
   map.fitBounds(base.getBounds(), {paddingBottomRight: [map.getSize().x > 700 ? 300 : 0, 0]});
@@ -363,7 +353,7 @@ def main():
                     "geometry": {"type": f["type"], "coordinates": f["coordinates"]}})
 
     cfg = dict(
-        title=MAP_TITLE, subtitle=SUBTITLE, labels=LABELS,
+        labels=LABELS,
         statuses=[dict(key=k, label=l, color=c) for k, l, c in STATUSES],
         bills=[l for _, l in BILLS], committees=[l for _, l in COMMITTEES],
         colors=dict(noData=NO_DATA_COLOR, neutral=NEUTRAL_FILL, baseOutline=BASE_OUTLINE_COLOR, budget=BUDGET_COLOR),
