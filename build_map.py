@@ -17,6 +17,22 @@ from branca.element import Element
 from settings import *
 
 SHEET_URL = os.environ.get("SHEET_URL", "").strip()
+
+# Heatmap settings. Defaults are used if settings.py doesn't define them.
+def _opt(name, default):
+    return globals().get(name, default)
+
+HEAT_FILE = _opt("HEAT_FILE", "data/heat.json")            # made by make_heat_json.py
+HEAT_SHOW_AT_START = _opt("HEAT_SHOW_AT_START", False)
+HEAT_HEADING = _opt("HEAT_HEADING", "Arrests heatmap")
+HEAT_LABEL = _opt("HEAT_LABEL", "Selected misdemeanor arrests")
+HEAT_RADIUS = _opt("HEAT_RADIUS", 18)                      # blob size in pixels
+HEAT_BLUR = _opt("HEAT_BLUR", 15)
+HEAT_MAX_ZOOM = _opt("HEAT_MAX_ZOOM", 15)                  # zoom level at which points reach full strength
+HEAT_MIN_OPACITY = _opt("HEAT_MIN_OPACITY", 0.25)
+HEAT_MAX = _opt("HEAT_MAX", 1.0)                           # lower = hotter overall
+HEAT_PERCENTILE = _opt("HEAT_PERCENTILE", 95)              # cells at/above this percentile show at full intensity
+HEAT_GRADIENT = _opt("HEAT_GRADIENT", {0.2: "#bfd3ff", 0.5: "#6f7bff", 0.8: "#5b1fb8", 1.0: "#2a0a5e"})
 OUT_FILE = Path("site") / "index.html"
 
 # NYC Open Data: City Council Districts (NYC Dept. of City Planning, clipped to shoreline)
@@ -103,6 +119,8 @@ CSS = """<style>
 .sw{display:inline-block;width:18px;height:18px;border-radius:3px;border:1px solid rgba(0,0,0,.35);
  background-color:#fff;flex:none;box-sizing:border-box}
 .key{margin:2px 0 0}
+.hint{color:#52606d;font-size:11px;margin:2px 0 0 25px}
+canvas.leaflet-heatmap-layer{pointer-events:none!important}
 .dlabel{font:600 11px Arial,sans-serif;color:#111;white-space:nowrap;text-align:center;
  text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;pointer-events:none!important}
 .nolabels .dlabel{display:none}
@@ -130,7 +148,7 @@ function init(map) {
   const fc = CFG.features;
   const statusColor = {}, statusLabel = {};
   CFG.statuses.forEach(s => { statusColor[s.key] = s.color; statusLabel[s.key] = s.label; });
-  const state = {bill: CFG.defaultBill, committee: null, budget: false, bnt: false, sio: false, pc: false};
+  const state = {bill: CFG.defaultBill, committee: null, budget: false, bnt: false, sio: false, pc: false, heat: false};
 
   const seen = new Set(), U = [];
   fc.features.forEach(f => { const d = f.properties.district; if (!seen.has(d)) { seen.add(d); U.push(f.properties); } });
@@ -218,6 +236,32 @@ function init(map) {
   const syncLabels = () => map.getContainer().classList.toggle('nolabels', map.getZoom() < 11);
   map.on('zoomend', syncLabels); syncLabels();
 
+  // ---------- arrests heatmap (optional: only present when data/heat.json exists) ----------
+  let heatLayer = null;
+  function loadHeatLib(ok, fail) {
+    if (L.heatLayer) { ok(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js';
+    s.onload = ok; s.onerror = fail;
+    document.head.appendChild(s);
+  }
+  function setHeat(on) {
+    state.heat = on;
+    if (!CFG.heat) return;
+    if (!on) { if (heatLayer && map.hasLayer(heatLayer)) map.removeLayer(heatLayer); return; }
+    loadHeatLib(function () {
+      if (!state.heat) return;
+      if (!heatLayer) heatLayer = L.heatLayer(CFG.heat.points, CFG.heat.options);
+      if (!map.hasLayer(heatLayer)) heatLayer.addTo(map);
+      if (heatLayer._canvas) heatLayer._canvas.style.pointerEvents = 'none';
+    }, function () {
+      state.heat = false;
+      const box = legendEl && legendEl.querySelector('[data-flag="heat"]');
+      if (box) box.checked = false;
+      setN('[data-n="heat"]', 'failed to load');
+    });
+  }
+
   // ---------- legend ----------
   let legendEl = null;
   const hatchCss = h => 'repeating-linear-gradient(' + (180 - h.angle) + 'deg,' + h.color + ' 0,' + h.color + ' ' + h.width + 'px,transparent ' + h.width + 'px,transparent ' + h.spacing + 'px)';
@@ -243,6 +287,13 @@ function init(map) {
     CFG.committees.forEach((c, i) => { h += radioOpt('committee', i, false, swHatch(CFG.committeeHatch), c, 'data-c="' + i + '"'); });
     h += '<h2>' + esc(T.otherHeading) + '</h2>';
     h += checkOpt('bnt', swHatch(CFG.bntHatch), T.bnt) + checkOpt('sio', swLine(CFG.sio), T.sio) + checkOpt('pc', swLine(CFG.pc), T.pc);
+    if (CFG.heat) {
+      const g = CFG.heat.options.gradient || {};
+      const stops = Object.keys(g).sort((a, b) => a - b).map(k => g[k]).join(',');
+      h += '<h2>' + esc(CFG.heat.heading) + '</h2>' +
+        checkOpt('heat', '<span class="sw" style="background:linear-gradient(90deg,' + stops + ')"></span>', CFG.heat.label);
+      if (CFG.heat.note) h += '<div class="hint">' + esc(CFG.heat.note) + '</div>';
+    }
     h += '<label class="opt" style="margin-top:10px"><input type="checkbox" id="lbl"' + (CFG.labelsOn ? ' checked' : '') + '><span class="t">' + esc(T.showNumbers) + '</span></label>';
     return h;
   }
@@ -272,6 +323,7 @@ function init(map) {
     if (t.id === 'lbl') { if (t.checked) labels.addTo(map); else map.removeLayer(labels); return; }
     if (t.name === 'bill') state.bill = (+t.value < 0) ? null : +t.value;
     else if (t.name === 'committee') state.committee = (+t.value < 0) ? null : +t.value;
+    else if (t.dataset && t.dataset.flag === 'heat') { setHeat(t.checked); return; }
     else if (t.dataset && t.dataset.flag) state[t.dataset.flag] = t.checked;
     redraw();
   }
@@ -289,9 +341,39 @@ function init(map) {
 
   staticCounts();
   redraw();
+  if (CFG.heat && CFG.heat.showAtStart) {
+    const box = legendEl.querySelector('[data-flag="heat"]');
+    if (box) box.checked = true;
+    setHeat(true);
+  }
   map.fitBounds(base.getBounds(), {paddingBottomRight: [map.getSize().x > 700 ? 300 : 0, 0]});
 }
 """
+
+
+def load_heat():
+    """Reads data/heat.json (grid cells with arrest counts) if it exists; returns None otherwise."""
+    path = Path(HEAT_FILE)
+    if not path.exists():
+        print(f"(no {HEAT_FILE} found, so the map is built without the heatmap layer)")
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    pts = raw.get("points", [])
+    if not pts:
+        print(f"! {HEAT_FILE} has no points; skipping the heatmap layer")
+        return None
+    counts = sorted(p[2] for p in pts)
+    cap = max(1, counts[min(len(counts) - 1, int(len(counts) * HEAT_PERCENTILE / 100))])
+    points = [[p[0], p[1], round(min(p[2] / cap, 1.0), 3)] for p in pts]
+    print(f"Heatmap: {len(points)} grid cells (full intensity at {cap}+ arrests per cell)")
+    if len(points) > 150000:
+        print("! That is a lot of cells; consider a coarser grid in make_heat_json.py to keep the page fast")
+    return dict(
+        points=points, heading=HEAT_HEADING, label=HEAT_LABEL, note=raw.get("note", ""),
+        showAtStart=HEAT_SHOW_AT_START,
+        options=dict(radius=HEAT_RADIUS, blur=HEAT_BLUR, maxZoom=HEAT_MAX_ZOOM,
+                     minOpacity=HEAT_MIN_OPACITY, max=HEAT_MAX, gradient=HEAT_GRADIENT),
+    )
 
 
 def main():
@@ -359,6 +441,7 @@ def main():
         colors=dict(noData=NO_DATA_COLOR, neutral=NEUTRAL_FILL, baseOutline=BASE_OUTLINE_COLOR, budget=BUDGET_COLOR),
         committeeHatch=COMMITTEE_HATCH, bntHatch=BNT_HATCH, sio=SIO_OUTLINE, pc=PC_OUTLINE,
         fillOpacity=FILL_OPACITY, defaultBill=DEFAULT_BILL, labelsOn=SHOW_NUMBERS,
+        heat=load_heat(),
         features={"type": "FeatureCollection", "features": out},
     )
 
