@@ -80,3 +80,13 @@ LABELS = dict(
     no="No",
     showNumbers="Show district numbers",
 )
+
+# --- Heatmap settings ---
+HEAT_SHOW_AT_START = False
+HEAT_HEADING = "QoL misdemeanor arrests heatmap"
+HEAT_LABEL = ""
+HEAT_RADIUS = 18        # blob size in pixels
+HEAT_MAX_ZOOM = 15
+HEAT_MAX = 1.0          # lower = hotter overall
+HEAT_PERCENTILE = 95    # cells at or above this show at full strength
+HEAT_GRADIENT = {0.2: "#bfd3ff", 0.5: "#6f7bff", 0.8: "#5b1fb8", 1.0: "#2a0a5e"}
