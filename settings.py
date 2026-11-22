@@ -1,7 +1,8 @@
 # ===== SETTINGS: everything you might want to edit lives in this cell =====
 
 # --- Your Google Sheet (shared as "Anyone with the link: Viewer") ---
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1D-Jzl5igGnsbtF7oPv0ODIL3JkGyO0N7/edit?gid=1342227698#gid=1342227698"            # paste the Sheet link here
+# The link itself is not kept here because this repo is public. The GitHub Action reads it from the
+# SHEET_URL secret; on your own computer, run  export SHEET_URL='...'  before build_map.py.
 SHEET_TAB = "Council"     # name of the tab that holds the district rows
 
 # --- On load ---
@@ -82,11 +83,39 @@ LABELS = dict(
 )
 
 # --- Heatmap settings ---
+
 HEAT_SHOW_AT_START = False
 HEAT_HEADING = "QoL misdemeanor arrests heatmap"
 HEAT_LABEL = ""
-HEAT_RADIUS = 18        # blob size in pixels
+HEAT_RADIUS = 12
+HEAT_BLUR = 20
+HEAT_MAX = 0.15
+HEAT_MIN_OPACITY = 0.25
 HEAT_MAX_ZOOM = 15
-HEAT_MAX = 0.5          # lower = hotter overall
-HEAT_PERCENTILE = 95    # cells at or above this show at full strength
-HEAT_GRADIENT = {0.2: "#bfd3ff", 0.5: "#6f7bff", 0.8: "#5b1fb8", 1.0: "#2a0a5e"}
+HEAT_PERCENTILE = 90
+HEAT_GRADIENT = {0.2: "#fcfdbf", 0.4: "#fc8961", 0.6: "#b73779", 0.8: "#51127c", 1.0: "#000004"}
+
+# --- B HEARD precincts (NYPD precinct outlines drawn over the council districts) ---
+BHEARD_SHOW_AT_START = False
+BHEARD_HEADING = "B HEARD"
+BHEARD_LABEL = "B HEARD precincts"
+NYPD_PRECINCT_FILE = "data/police_precincts.geojson"   # optional local copy; downloaded from NYC Open Data if missing
+BHEARD_PRECINCTS = [
+    40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 52,
+    25, 26, 28, 30, 32, 33, 34,
+    63, 69, 67, 71, 73, 75,
+    104, 108, 110, 112, 114, 115
+]
+BHEARD_STYLE = dict(color="#00008B", weight=2.5, fillOpacity=0.2)
+
+# --- Encampment sweeps (district shading, read from the DHS LL34 reports in DHS_SWEEPS_FOLDER) ---
+SWEEPS_SHOW_AT_START = False
+SWEEPS_HEADING = "Encampment sweeps"
+SWEEPS_LABEL = "DHS encampment sweeps"
+DHS_SWEEPS_FOLDER = "data/dhs_sweeps/"   # drop each quarter's .xlsx from the DHS stats page in here
+SWEEPS_METRIC = "sweeps"    # "sweeps" = number of sweeps, "people" = people affected
+SWEEPS_PERCENTILE = 90      # districts at or above this percentile get the darkest shade
+SWEEPS_COLOR = "#BB1F00"
+SWEEPS_OPACITY = 0.85
+
+COUNCIL_FILE = "data/council.geojson"   # optional local copy; downloaded from NYC Open Data if missing

@@ -6,6 +6,9 @@ The GitHub Action (update-map.yml) runs this, password-protects the result and p
 Settings (colors, labels, column names) are in settings.py. The Sheet link comes from the SHEET_URL
 environment variable (a GitHub secret). Nothing in this file needs editing.
 
+Run  python build_map.py --tune  on your own computer to add a panel of sliders for the heatmap and
+sweeps shading. The panel redraws the map as you drag and shows the settings.py lines to copy back.
+
 Logs on a public repo are public, so this script only prints district numbers, column headers and
 malformed cell values, never names, notes or the Sheet link.
 """
@@ -33,35 +36,59 @@ HEAT_MIN_OPACITY = _opt("HEAT_MIN_OPACITY", 0.25)
 HEAT_MAX = _opt("HEAT_MAX", 1.0)                           # lower = hotter overall
 HEAT_PERCENTILE = _opt("HEAT_PERCENTILE", 95)              # cells at/above this percentile show at full intensity
 HEAT_GRADIENT = _opt("HEAT_GRADIENT", {0.2: "#bfd3ff", 0.5: "#6f7bff", 0.8: "#5b1fb8", 1.0: "#2a0a5e"})
+
+BHEARD_PRECINCTS = _opt("BHEARD_PRECINCTS", [])
+BHEARD_PRECINCT_FILE = _opt("NYPD_PRECINCT_FILE", "data/police_precincts.geojson")
+BHEARD_SHOW_AT_START = _opt("BHEARD_SHOW_AT_START", False)
+BHEARD_HEADING = _opt("BHEARD_HEADING", "B HEARD")
+BHEARD_LABEL = _opt("BHEARD_LABEL", "B HEARD precincts")
+BHEARD_STYLE = _opt("BHEARD_STYLE", dict(color="#00008B", weight=2.5, dashArray="6 4", fillOpacity=0.08))
+
+DHS_SWEEPS_FOLDER = _opt("DHS_SWEEPS_FOLDER", "data/dhs_sweeps/")   # quarterly DHS LL34 .xlsx reports
+SWEEPS_SHOW_AT_START = _opt("SWEEPS_SHOW_AT_START", False)
+SWEEPS_HEADING = _opt("SWEEPS_HEADING", "Encampment sweeps")
+SWEEPS_LABEL = _opt("SWEEPS_LABEL", "DHS encampment sweeps")
+SWEEPS_METRIC = _opt("SWEEPS_METRIC", "sweeps")            # "sweeps" or "people"
+SWEEPS_PERCENTILE = _opt("SWEEPS_PERCENTILE", 90)
+SWEEPS_COLOR = _opt("SWEEPS_COLOR", "#BB1F00")
+SWEEPS_OPACITY = _opt("SWEEPS_OPACITY", 0.85)
+
+TUNE = "--tune" in sys.argv
 OUT_FILE = Path("site") / "index.html"
 
 # NYC Open Data: City Council Districts (NYC Dept. of City Planning, clipped to shoreline)
 COUNCIL_DATASET = "872g-cjhh"
+# NYC Open Data: Police Precincts (NYPD)
+PRECINCT_DATASET = "y76i-bdw7"
 GEOJSON_URL = "https://data.cityofnewyork.us/api/geospatial/{id}?method=export&format=GeoJSON"
 FIELD_CANDIDATES = ["coundist", "council_dist", "district", "dist"]
 
 def _round(c, nd=4):  # ~11 m precision keeps the map light
     return round(c, nd) if isinstance(c, (int, float)) else [_round(x, nd) for x in c]
 
-def load_council():
-    cache = Path("data") / "council.geojson"   # optional: commit a copy here to skip the download
+def fetch_geojson(cache_file, dataset_id):
+    """Returns the GeoJSON in cache_file if it exists, otherwise downloads the NYC Open Data dataset."""
+    cache = Path(cache_file)   # optional: commit a copy here to skip the download
     if cache.exists():
-        gj = json.loads(cache.read_text(encoding="utf-8"))
-    else:
-        last = None
-        for attempt in range(1, 4):
-            try:
-                req = urllib.request.Request(GEOJSON_URL.format(id=COUNCIL_DATASET),
-                                             headers={"User-Agent": "nyc-district-map/1.0"})
-                with urllib.request.urlopen(req, timeout=180) as r:
-                    gj = json.load(r)
-                break
-            except Exception as e:  # noqa: BLE001
-                last = e
-                print(f"Boundary download attempt {attempt} failed: {type(e).__name__}")
-                time.sleep(5 * attempt)
-        else:
-            sys.exit(f"Could not download the district boundaries: {last}")
+        return json.loads(cache.read_text(encoding="utf-8"))
+    last = None
+    for attempt in range(1, 4):
+        try:
+            req = urllib.request.Request(GEOJSON_URL.format(id=dataset_id),
+                                         headers={"User-Agent": "nyc-district-map/1.0"})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                return json.load(r)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            print(f"Boundary download attempt {attempt} failed: {type(e).__name__}")
+            time.sleep(5 * attempt)
+    raise RuntimeError(f"Could not download boundary dataset {dataset_id}: {type(last).__name__}")
+
+def load_council():
+    try:
+        gj = fetch_geojson(COUNCIL_FILE, COUNCIL_DATASET)
+    except RuntimeError as e:
+        sys.exit(str(e))
     feats = [f for f in gj["features"] if f.get("geometry")]
     lower = {k.lower(): k for k in feats[0]["properties"]}
     field = next((lower[c] for c in FIELD_CANDIDATES if c in lower), None)
@@ -129,6 +156,10 @@ canvas.leaflet-heatmap-layer{pointer-events:none!important}
 .info th{text-align:left;font-weight:normal;color:#52606d;padding:2px 10px 2px 0;vertical-align:top;white-space:nowrap}
 .info td{padding:2px 0}
 .chip{display:inline-block;padding:1px 9px;border-radius:10px;font-weight:600;border:1px solid rgba(0,0,0,.25)}
+.tune{width:250px;font-size:12px}.tune h2{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#52606d;margin:10px 0 4px}
+.tune h2:first-child{margin-top:0}.tune label{display:flex;align-items:center;gap:6px;margin:3px 0}
+.tune label span{width:86px;flex:none}.tune input[type=range]{flex:1;min-width:0}.tune output{width:38px;text-align:right;font-variant-numeric:tabular-nums}
+.tune textarea{width:100%;box-sizing:border-box;height:150px;font:11px/1.3 Menlo,monospace;margin-top:6px}
 @media(max-width:700px){.legend{width:210px;max-height:55vh;font-size:12px}}
 </style>"""
 
@@ -148,12 +179,12 @@ function init(map) {
   const fc = CFG.features;
   const statusColor = {}, statusLabel = {};
   CFG.statuses.forEach(s => { statusColor[s.key] = s.color; statusLabel[s.key] = s.label; });
-  const state = {bill: CFG.defaultBill, committee: null, budget: false, bnt: false, sio: false, pc: false, heat: false};
+  const state = {bill: CFG.defaultBill, committee: null, budget: false, bnt: false, sio: false, pc: false, heat: false, sweeps: false, bheard: false};
 
   const seen = new Set(), U = [];
   fc.features.forEach(f => { const d = f.properties.district; if (!seen.has(d)) { seen.add(d); U.push(f.properties); } });
 
-  [['pCommittee', 410], ['pBnt', 411], ['pSio', 420], ['pPc', 421]].forEach(function (a) {
+  [['pCommittee', 410], ['pBnt', 411], ['pSio', 420], ['pPc', 421], ['pBheard', 422], ['pHeat', 450]].forEach(function (a) {
     const pane = map.createPane(a[0]); pane.style.zIndex = a[1]; pane.style.pointerEvents = 'none';
   });
 
@@ -174,18 +205,44 @@ function init(map) {
     row(T.bnt, esc(p.bntText));
     row(T.sio, esc(p.sioText));
     row(T.pc, esc(p.pcText));
+    if (CFG.sweeps) row(CFG.sweeps.heading, esc(p.sweeps) + ' sweeps, ' + esc(p.sweepPeople) + ' people affected');
     row(T.notes, '<span style="white-space:pre-wrap">' + (esc(p.notes) || DASH) + '</span>');
     return '<div class="info"><h3>' + repName(p) + '</h3><table>' + rows.join('') + '</table></div>';
   }
   const tipHtml = p => '<b>' + repName(p) + '</b><br>' + esc(T.district) + ' ' + esc(p.district) + (p.party ? ' \u00b7 ' + esc(p.party) : '');
 
   // ---------- base layer: fill colour, hover, click ----------
+  // ---------- encampment sweeps shading (scaled so the top percentile gets the darkest shade) ----------
+  const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix = (a, b, t) => '#' + a.map((v, i) => Math.round(v + (b[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  const sweepVal = p => CFG.sweeps.metric === 'people' ? p.sweepPeople : p.sweeps;
+  function pctCap(values, pct) {
+    const v = values.slice().sort((a, b) => a - b);
+    return v.length ? Math.max(1, v[Math.min(v.length - 1, Math.floor(v.length * pct / 100))]) : 1;
+  }
+  let sweepCap = 1;
+  const sweepRamp = () => [mix(hexRgb('#ffffff'), hexRgb(CFG.sweeps.color), 0.12), CFG.sweeps.color];
+  function sweepColor(p) {
+    const v = sweepVal(p);
+    if (!v) return CFG.colors.neutral;
+    const r = sweepRamp();
+    return mix(hexRgb(r[0]), hexRgb(r[1]), Math.min(v / sweepCap, 1));
+  }
+  function updateSweepCap() {
+    if (!CFG.sweeps) return;
+    sweepCap = pctCap(U.map(sweepVal), CFG.sweeps.percentile);
+    const el = legendEl && legendEl.querySelector('[data-hint="sweeps"]');
+    if (el) el.textContent = (CFG.sweeps.note ? CFG.sweeps.note + '. ' : '') + 'Darkest = ' + sweepCap + '+ ' +
+      (CFG.sweeps.metric === 'people' ? 'people affected' : 'sweeps') + '.';
+  }
+
   function fillColor(p) {
+    if (state.sweeps && CFG.sweeps) return sweepColor(p);
     if (state.budget && p.budget) return CFG.colors.budget;
     if (state.bill !== null) { const k = p.billKeys[state.bill]; return k ? statusColor[k] : CFG.colors.noData; }
     return CFG.colors.neutral;
   }
-  const baseStyle = f => ({fillColor: fillColor(f.properties), fillOpacity: CFG.fillOpacity, color: CFG.colors.baseOutline, weight: 1, opacity: 1});
+  const baseStyle = f => ({fillColor: fillColor(f.properties), fillOpacity: (state.sweeps && CFG.sweeps) ? CFG.sweeps.opacity : CFG.fillOpacity, color: CFG.colors.baseOutline, weight: 1, opacity: 1});
   const base = L.geoJSON(fc, {
     style: baseStyle,
     onEachFeature: function (f, l) {
@@ -207,6 +264,8 @@ function init(map) {
     ? {stroke: true, fill: false, color: CFG.sio.color, weight: CFG.sio.weight, opacity: 1} : OFF);
   const pcLayer = overlay('pPc', f => (state.pc && f.properties.pc)
     ? {stroke: true, fill: false, color: CFG.pc.color, weight: CFG.pc.weight, opacity: 1} : OFF);
+  const bheardLayer = CFG.bheard ? L.geoJSON(CFG.bheard.features, {pane: 'pBheard', interactive: false,
+    style: () => Object.assign({fillColor: CFG.bheard.style.color, opacity: 1}, CFG.bheard.style)}) : null;
 
   function addPattern(layer, id, h) {
     const svg = map.getRenderer(layer)._container;
@@ -245,15 +304,34 @@ function init(map) {
     s.onload = ok; s.onerror = fail;
     document.head.appendChild(s);
   }
+  function heatPoints() {
+    const cap = pctCap(CFG.heat.points.map(p => p[2]), CFG.heat.percentile);
+    return CFG.heat.points.map(p => [p[0], p[1], Math.min(p[2] / cap, 1)]);
+  }
+  function refreshHeat() {
+    if (heatLayer) { heatLayer.setOptions(CFG.heat.options); heatLayer.setLatLngs(heatPoints()); }
+  }
   function setHeat(on) {
     state.heat = on;
     if (!CFG.heat) return;
-    if (!on) { if (heatLayer && map.hasLayer(heatLayer)) map.removeLayer(heatLayer); return; }
+    if (!on) {
+      if (heatLayer && map.hasLayer(heatLayer)) {
+        // leaflet.heat removes its canvas from the overlay pane, so put it back there first.
+        map.getPanes().overlayPane.appendChild(heatLayer._canvas);
+        map.removeLayer(heatLayer);
+      }
+      return;
+    }
     loadHeatLib(function () {
       if (!state.heat) return;
-      if (!heatLayer) heatLayer = L.heatLayer(CFG.heat.points, CFG.heat.options);
+      if (!heatLayer) heatLayer = L.heatLayer(heatPoints(), CFG.heat.options);
       if (!map.hasLayer(heatLayer)) heatLayer.addTo(map);
-      if (heatLayer._canvas) heatLayer._canvas.style.pointerEvents = 'none';
+      // leaflet.heat always draws in the overlay pane (z-index 400), under the hatching and outline
+      // panes. Moving its canvas to pHeat puts it above every district layer.
+      if (heatLayer._canvas) {
+        heatLayer._canvas.style.pointerEvents = 'none';
+        map.getPane('pHeat').appendChild(heatLayer._canvas);
+      }
     }, function () {
       state.heat = false;
       const box = legendEl && legendEl.querySelector('[data-flag="heat"]');
@@ -287,6 +365,14 @@ function init(map) {
     CFG.committees.forEach((c, i) => { h += radioOpt('committee', i, false, swHatch(CFG.committeeHatch), c, 'data-c="' + i + '"'); });
     h += '<h2>' + esc(T.otherHeading) + '</h2>';
     h += checkOpt('bnt', swHatch(CFG.bntHatch), T.bnt) + checkOpt('sio', swLine(CFG.sio), T.sio) + checkOpt('pc', swLine(CFG.pc), T.pc);
+    if (CFG.bheard) h += '<h2>' + esc(CFG.bheard.heading) + '</h2>' + checkOpt('bheard',
+      '<span class="sw" style="border:2px dashed ' + CFG.bheard.style.color + '"></span>', CFG.bheard.label);
+    if (CFG.sweeps) {
+      const r = sweepRamp();
+      h += '<h2>' + esc(CFG.sweeps.heading) + '</h2>' +
+        checkOpt('sweeps', '<span class="sw" style="background:linear-gradient(90deg,' + r[0] + ',' + r[1] + ')"></span>', CFG.sweeps.label) +
+        '<div class="hint" data-hint="sweeps"></div>';
+    }
     if (CFG.heat) {
       const g = CFG.heat.options.gradient || {};
       const stops = Object.keys(g).sort((a, b) => a - b).map(k => g[k]).join(',');
@@ -308,6 +394,7 @@ function init(map) {
   function staticCounts() {
     ['budget', 'bnt', 'sio', 'pc'].forEach(k => setN('[data-n="' + k + '"]', U.filter(p => p[k]).length));
     CFG.committees.forEach((c, i) => setN('[data-c="' + i + '"]', U.filter(p => p.committees[i]).length));
+    if (CFG.bheard) setN('[data-n="bheard"]', CFG.bheard.features.features.length);
   }
 
   function redraw() {
@@ -316,6 +403,7 @@ function init(map) {
     bntLayer.setStyle(bntLayer.options.style);
     sioLayer.setStyle(sioLayer.options.style);
     pcLayer.setStyle(pcLayer.options.style);
+    if (bheardLayer) { if (state.bheard) bheardLayer.addTo(map); else map.removeLayer(bheardLayer); }
     renderCounts();
   }
   function onChange(e) {
@@ -340,13 +428,77 @@ function init(map) {
   legend.addTo(map);
 
   staticCounts();
+  updateSweepCap();
+  [['bheard', CFG.bheard], ['sweeps', CFG.sweeps]].forEach(function (a) {
+    if (!a[1] || !a[1].showAtStart) return;
+    state[a[0]] = true;
+    const box = legendEl.querySelector('[data-flag="' + a[0] + '"]');
+    if (box) box.checked = true;
+  });
   redraw();
+  if (CFG.tune) addTuner();
   if (CFG.heat && CFG.heat.showAtStart) {
     const box = legendEl.querySelector('[data-flag="heat"]');
     if (box) box.checked = true;
     setHeat(true);
   }
   map.fitBounds(base.getBounds(), {paddingBottomRight: [map.getSize().x > 700 ? 300 : 0, 0]});
+
+  // ---------- tuning panel (only in pages built with --tune) ----------
+  function addTuner() {
+    const ctl = [];
+    if (CFG.heat) {
+      const o = CFG.heat.options;
+      ctl.push({h: CFG.heat.heading});
+      ctl.push({k: 'HEAT_RADIUS', l: 'Radius', min: 2, max: 60, step: 1, get: () => o.radius, set: v => { o.radius = v; }, heat: 1});
+      ctl.push({k: 'HEAT_BLUR', l: 'Blur', min: 1, max: 60, step: 1, get: () => o.blur, set: v => { o.blur = v; }, heat: 1});
+      ctl.push({k: 'HEAT_MAX', l: 'Max', min: 0.01, max: 2, step: 0.01, get: () => o.max, set: v => { o.max = v; }, heat: 1});
+      ctl.push({k: 'HEAT_MIN_OPACITY', l: 'Min opacity', min: 0, max: 1, step: 0.05, get: () => o.minOpacity, set: v => { o.minOpacity = v; }, heat: 1});
+      ctl.push({k: 'HEAT_MAX_ZOOM', l: 'Max zoom', min: 8, max: 18, step: 1, get: () => o.maxZoom, set: v => { o.maxZoom = v; }, heat: 1});
+      ctl.push({k: 'HEAT_PERCENTILE', l: 'Percentile', min: 50, max: 100, step: 1, get: () => CFG.heat.percentile, set: v => { CFG.heat.percentile = v; }, heat: 1});
+    }
+    if (CFG.sweeps) {
+      const w = CFG.sweeps;
+      ctl.push({h: w.heading});
+      ctl.push({k: 'SWEEPS_METRIC', l: 'Measure', opts: ['sweeps', 'people'], get: () => w.metric, set: v => { w.metric = v; }});
+      ctl.push({k: 'SWEEPS_PERCENTILE', l: 'Percentile', min: 50, max: 100, step: 1, get: () => w.percentile, set: v => { w.percentile = v; }});
+      ctl.push({k: 'SWEEPS_OPACITY', l: 'Opacity', min: 0.1, max: 1, step: 0.05, get: () => w.opacity, set: v => { w.opacity = v; }});
+    }
+    const el = L.DomUtil.create('div', 'panel tune');
+    let h = '';
+    ctl.forEach(function (c, i) {
+      if (c.h) { h += '<h2>Tune: ' + esc(c.h) + '</h2>'; return; }
+      h += '<label><span>' + esc(c.l) + '</span>' + (c.opts
+        ? '<select data-i="' + i + '">' + c.opts.map(v => '<option' + (v === c.get() ? ' selected' : '') + '>' + v + '</option>').join('') + '</select>'
+        : '<input type="range" data-i="' + i + '" min="' + c.min + '" max="' + c.max + '" step="' + c.step + '" value="' + c.get() + '"><output>' + c.get() + '</output>') + '</label>';
+    });
+    el.innerHTML = h + '<textarea readonly></textarea>';
+    const out = el.querySelector('textarea');
+    const py = v => typeof v === 'string' ? '"' + v + '"' : String(v);
+    const dump = () => { out.value = '# paste into settings.py\n' + ctl.filter(c => c.k).map(c => c.k + ' = ' + py(c.get())).join('\n'); };
+    el.addEventListener('input', function (e) {
+      const c = ctl[+e.target.dataset.i];
+      if (!c) return;
+      const v = c.opts ? e.target.value : +e.target.value;
+      c.set(v);
+      if (!c.opts) e.target.nextElementSibling.textContent = v;
+      if (c.heat) {
+        refreshHeat();
+        if (!state.heat) { const b = legendEl.querySelector('[data-flag="heat"]'); if (b) b.checked = true; setHeat(true); }
+      } else {
+        updateSweepCap();
+        if (!state.sweeps) { state.sweeps = true; const b = legendEl.querySelector('[data-flag="sweeps"]'); if (b) b.checked = true; }
+        redraw();
+      }
+      dump();
+    });
+    L.DomEvent.disableClickPropagation(el);
+    L.DomEvent.disableScrollPropagation(el);
+    const t = L.control({position: 'bottomleft'});
+    t.onAdd = () => el;
+    t.addTo(map);
+    dump();
+  }
 }
 """
 
@@ -364,16 +516,95 @@ def load_heat():
         return None
     counts = sorted(p[2] for p in pts)
     cap = max(1, counts[min(len(counts) - 1, int(len(counts) * HEAT_PERCENTILE / 100))])
-    points = [[p[0], p[1], round(min(p[2] / cap, 1.0), 3)] for p in pts]
+    points = [[p[0], p[1], p[2]] for p in pts]   # raw counts; the page scales them by HEAT_PERCENTILE
     print(f"Heatmap: {len(points)} grid cells (full intensity at {cap}+ arrests per cell)")
     if len(points) > 150000:
         print("! That is a lot of cells; consider a coarser grid in make_heat_json.py to keep the page fast")
     return dict(
         points=points, heading=HEAT_HEADING, label=HEAT_LABEL, note=raw.get("note", ""),
-        showAtStart=HEAT_SHOW_AT_START,
+        showAtStart=HEAT_SHOW_AT_START, percentile=HEAT_PERCENTILE,
         options=dict(radius=HEAT_RADIUS, blur=HEAT_BLUR, maxZoom=HEAT_MAX_ZOOM,
                      minOpacity=HEAT_MIN_OPACITY, max=HEAT_MAX, gradient=HEAT_GRADIENT),
     )
+
+
+def load_bheard():
+    """Returns the B HEARD precinct outlines for the page, or None if no precincts are listed or the download fails."""
+    wanted = set(BHEARD_PRECINCTS)
+    if not wanted:
+        return None
+    try:
+        gj = fetch_geojson(BHEARD_PRECINCT_FILE, PRECINCT_DATASET)
+    except RuntimeError as e:
+        print(f"! {e}; skipping the B HEARD layer")
+        return None
+    feats = []
+    for f in gj["features"]:
+        try:
+            pct = int(float(f["properties"].get("precinct")))
+        except (TypeError, ValueError):
+            continue
+        g = f.get("geometry")
+        if pct in wanted and g:
+            feats.append({"type": "Feature", "properties": {"precinct": pct},
+                          "geometry": {"type": g["type"], "coordinates": _round(g["coordinates"])}})
+    missing = sorted(wanted - {f["properties"]["precinct"] for f in feats})
+    if missing:
+        print(f"! B HEARD precincts not found in the boundary file: {missing}")
+    print(f"B HEARD: {len(feats)} precincts")
+    return dict(heading=BHEARD_HEADING, label=BHEARD_LABEL, style=BHEARD_STYLE, showAtStart=BHEARD_SHOW_AT_START,
+                features={"type": "FeatureCollection", "features": feats})
+
+
+SWEEP_SHEETS = ["Line-Level Data", "Resolved"]        # the line-level tab's name changed in CY25Q3
+SWEEP_DISTRICT_COLS = {"council dist", "council_dist", "city council districts"}
+
+
+def read_sweep_report(path):
+    """Returns the report's (district, people) rows, one per sweep, or None if no line-level tab is found."""
+    xl = pd.ExcelFile(path)
+    sheet = next((s for s in SWEEP_SHEETS if s in xl.sheet_names), None)
+    if sheet is None:
+        print(f"! {path.name}: no '{SWEEP_SHEETS[0]}' or '{SWEEP_SHEETS[1]}' tab, skipped")
+        return None
+    df = pd.read_excel(xl, sheet_name=sheet)
+    cols = {norm(c): c for c in df.columns}
+    dist = next((cols[c] for c in cols if c in SWEEP_DISTRICT_COLS), None)
+    people = next((cols[c] for c in cols if c.startswith("clients affected")), None)
+    if dist is None or people is None:
+        print(f"! {path.name}: couldn't find the council district or clients affected column, skipped")
+        return None
+    return pd.DataFrame({"district": pd.to_numeric(df[dist], errors="coerce"),
+                         "people": pd.to_numeric(df[people], errors="coerce")}).dropna()
+
+
+def load_sweeps():
+    """Returns (page settings, {district: {"sweeps", "people"}}) from the DHS reports, or (None, {}) if there are none.
+
+    Only sweeps that affected at least one person are counted.
+    """
+    files = sorted(Path(DHS_SWEEPS_FOLDER).glob("*.xlsx"))
+    if not files:
+        print(f"(no .xlsx files in {DHS_SWEEPS_FOLDER}, so the map is built without the encampment sweeps layer)")
+        return None, {}
+    frames, quarters = [], []
+    for f in files:
+        df = read_sweep_report(f)
+        if df is not None:
+            frames.append(df)
+            quarters.append(f.stem.split("_")[0])
+    if not frames:
+        return None, {}
+    df = pd.concat(frames)
+    df = df[df.people > 0]
+    agg = df.groupby(df.district.astype(int)).people.agg(["count", "sum"])
+    by_district = {int(d): {"sweeps": int(r["count"]), "people": int(r["sum"])} for d, r in agg.iterrows()}
+    period = quarters[0] if len(quarters) == 1 else f"{quarters[0]}\u2013{quarters[-1]}"
+    note = f"{int(agg['count'].sum()):,} sweeps, {period}"
+    print(f"Encampment sweeps: {note}, {len(by_district)} districts")
+    return dict(heading=SWEEPS_HEADING, label=SWEEPS_LABEL, note=note, metric=SWEEPS_METRIC,
+                percentile=SWEEPS_PERCENTILE, color=SWEEPS_COLOR, opacity=SWEEPS_OPACITY,
+                showAtStart=SWEEPS_SHOW_AT_START), by_district
 
 
 def main():
@@ -410,6 +641,7 @@ def main():
     for d in sorted(on_map - set(rows)):
         print(f"! No Sheet row for district {d} (shown with no data)")
 
+    sweeps_cfg, sweeps = load_sweeps()
     out, labelled = [], set()
     for f in FEATURES:
         d = f["district"]
@@ -428,6 +660,7 @@ def main():
             bnt=is_on(cell(rec, COLS["bnt"])), bntText=flag_text(cell(rec, COLS["bnt"])),
             sio=is_on(cell(rec, COLS["sio"])), sioText=flag_text(cell(rec, COLS["sio"])),
             pc=is_on(cell(rec, COLS["pc"])), pcText=flag_text(cell(rec, COLS["pc"])),
+            sweeps=sweeps.get(d, {}).get("sweeps", 0), sweepPeople=sweeps.get(d, {}).get("people", 0),
             label=None if d in labelled else label_point(f["coordinates"], f["type"]),
         )
         labelled.add(d)
@@ -441,7 +674,7 @@ def main():
         colors=dict(noData=NO_DATA_COLOR, neutral=NEUTRAL_FILL, baseOutline=BASE_OUTLINE_COLOR, budget=BUDGET_COLOR),
         committeeHatch=COMMITTEE_HATCH, bntHatch=BNT_HATCH, sio=SIO_OUTLINE, pc=PC_OUTLINE,
         fillOpacity=FILL_OPACITY, defaultBill=DEFAULT_BILL, labelsOn=SHOW_NUMBERS,
-        heat=load_heat(),
+        heat=load_heat(), sweeps=sweeps_cfg, bheard=load_bheard(), tune=TUNE,
         features={"type": "FeatureCollection", "features": out},
     )
 
@@ -452,7 +685,7 @@ def main():
 
     OUT_FILE.parent.mkdir(exist_ok=True)
     m.save(str(OUT_FILE))
-    print(f"Wrote {OUT_FILE}")
+    print(f"Wrote {OUT_FILE}" + (" with the tuning panel (don't publish this build)" if TUNE else ""))
 
 
 if __name__ == "__main__":
