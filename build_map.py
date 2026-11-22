@@ -12,7 +12,7 @@ sweeps shading. The panel redraws the map as you drag and shows the settings.py 
 Logs on a public repo are public, so this script only prints district numbers, column headers and
 malformed cell values, never names, notes or the Sheet link.
 """
-import html, json, os, re, sys, time, urllib.parse, urllib.request
+import html, io, json, os, re, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 import pandas as pd
 import folium
@@ -53,6 +53,12 @@ SWEEPS_PERCENTILE = _opt("SWEEPS_PERCENTILE", 90)
 SWEEPS_COLOR = _opt("SWEEPS_COLOR", "#BB1F00")
 SWEEPS_OPACITY = _opt("SWEEPS_OPACITY", 0.85)
 
+MAJMIN_SHOW_AT_START = _opt("MAJMIN_SHOW_AT_START", False)
+MAJMIN_HEADING = _opt("MAJMIN_HEADING", "Demographics")
+MAJMIN_LABEL = _opt("MAJMIN_LABEL", "Majority-minority districts")
+MAJMIN_DOTS = _opt("MAJMIN_DOTS", dict(color="#3d2b1f", spacing=8, radius=1.6))
+CENSUS_FILE = _opt("CENSUS_FILE", "data/nyc_decennialcensusdata_2010_2020_change-core-geographies.xlsx")
+
 TUNE = "--tune" in sys.argv
 OUT_FILE = Path("site") / "index.html"
 
@@ -66,23 +72,30 @@ FIELD_CANDIDATES = ["coundist", "council_dist", "district", "dist"]
 def _round(c, nd=4):  # ~11 m precision keeps the map light
     return round(c, nd) if isinstance(c, (int, float)) else [_round(x, nd) for x in c]
 
-def fetch_geojson(cache_file, dataset_id):
-    """Returns the GeoJSON in cache_file if it exists, otherwise downloads the NYC Open Data dataset."""
+# NYC Planning: 2020 Census data for tracts, NTAs, community districts and council districts
+CENSUS_URL = ("https://s-media.nyc.gov/agencies/dcp/assets/files/excel/data-tools/census/census2020/"
+              "nyc_decennialcensusdata_2010_2020_change-core-geographies.xlsx")
+
+def fetch_bytes(cache_file, url):
+    """Returns the contents of cache_file if it exists, otherwise downloads url (three tries)."""
     cache = Path(cache_file)   # optional: commit a copy here to skip the download
     if cache.exists():
-        return json.loads(cache.read_text(encoding="utf-8"))
+        return cache.read_bytes()
     last = None
     for attempt in range(1, 4):
         try:
-            req = urllib.request.Request(GEOJSON_URL.format(id=dataset_id),
-                                         headers={"User-Agent": "nyc-district-map/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "nyc-district-map/1.0"})
             with urllib.request.urlopen(req, timeout=180) as r:
-                return json.load(r)
+                return r.read()
         except Exception as e:  # noqa: BLE001
             last = e
-            print(f"Boundary download attempt {attempt} failed: {type(e).__name__}")
+            print(f"Download attempt {attempt} for {cache.name} failed: {type(e).__name__}")
             time.sleep(5 * attempt)
-    raise RuntimeError(f"Could not download boundary dataset {dataset_id}: {type(last).__name__}")
+    raise RuntimeError(f"Could not download {cache.name}: {type(last).__name__}")
+
+def fetch_geojson(cache_file, dataset_id):
+    """Returns the GeoJSON in cache_file if it exists, otherwise downloads the NYC Open Data dataset."""
+    return json.loads(fetch_bytes(cache_file, GEOJSON_URL.format(id=dataset_id)))
 
 def load_council():
     try:
@@ -179,12 +192,12 @@ function init(map) {
   const fc = CFG.features;
   const statusColor = {}, statusLabel = {};
   CFG.statuses.forEach(s => { statusColor[s.key] = s.color; statusLabel[s.key] = s.label; });
-  const state = {bill: CFG.defaultBill, committee: null, budget: false, bnt: false, sio: false, pc: false, heat: false, sweeps: false, bheard: false};
+  const state = {bill: CFG.defaultBill, committee: null, budget: false, bnt: false, sio: false, pc: false, heat: false, sweeps: false, bheard: false, majmin: false};
 
   const seen = new Set(), U = [];
   fc.features.forEach(f => { const d = f.properties.district; if (!seen.has(d)) { seen.add(d); U.push(f.properties); } });
 
-  [['pCommittee', 410], ['pBnt', 411], ['pSio', 420], ['pPc', 421], ['pBheard', 422], ['pHeat', 450]].forEach(function (a) {
+  [['pCommittee', 410], ['pBnt', 411], ['pMajmin', 412], ['pSio', 420], ['pPc', 421], ['pBheard', 422], ['pHeat', 450]].forEach(function (a) {
     const pane = map.createPane(a[0]); pane.style.zIndex = a[1]; pane.style.pointerEvents = 'none';
   });
 
@@ -205,6 +218,7 @@ function init(map) {
     row(T.bnt, esc(p.bntText));
     row(T.sio, esc(p.sioText));
     row(T.pc, esc(p.pcText));
+    if (CFG.majmin) row('White (2020)', p.whiteNH == null ? DASH : esc(p.whiteNH) + '%');
     if (CFG.sweeps) row(CFG.sweeps.heading, esc(p.sweeps) + ' sweeps, ' + esc(p.sweepPeople) + ' people affected');
     row(T.notes, '<span style="white-space:pre-wrap">' + (esc(p.notes) || DASH) + '</span>');
     return '<div class="info"><h3>' + repName(p) + '</h3><table>' + rows.join('') + '</table></div>';
@@ -258,6 +272,8 @@ function init(map) {
   const OFF = {stroke: false, fill: false};
   const committeeLayer = overlay('pCommittee', f => (state.committee !== null && f.properties.committees[state.committee])
     ? {stroke: false, fill: true, fillColor: 'url(#hatchCommittee)', fillOpacity: 1} : OFF);
+  const majminLayer = overlay('pMajmin', f => (state.majmin && f.properties.majmin)
+    ? {stroke: false, fill: true, fillColor: 'url(#dotsMajmin)', fillOpacity: 1} : OFF);
   const bntLayer = overlay('pBnt', f => (state.bnt && f.properties.bnt)
     ? {stroke: false, fill: true, fillColor: 'url(#hatchBnt)', fillOpacity: 1} : OFF);
   const sioLayer = overlay('pSio', f => (state.sio && f.properties.sio)
@@ -283,6 +299,18 @@ function init(map) {
   }
   addPattern(committeeLayer, 'hatchCommittee', CFG.committeeHatch);
   addPattern(bntLayer, 'hatchBnt', CFG.bntHatch);
+  if (CFG.majmin) {
+    const d = CFG.majmin.dots, svg = map.getRenderer(majminLayer)._container;
+    let defs = svg.querySelector('defs');
+    if (!defs) { defs = document.createElementNS(NS, 'defs'); svg.insertBefore(defs, svg.firstChild); }
+    const pat = document.createElementNS(NS, 'pattern');
+    pat.setAttribute('id', 'dotsMajmin'); pat.setAttribute('patternUnits', 'userSpaceOnUse');
+    pat.setAttribute('width', d.spacing); pat.setAttribute('height', d.spacing);
+    const dot = document.createElementNS(NS, 'circle');
+    dot.setAttribute('cx', d.spacing / 2); dot.setAttribute('cy', d.spacing / 2); dot.setAttribute('r', d.radius);
+    dot.setAttribute('fill', d.color);
+    pat.appendChild(dot); defs.appendChild(pat);
+  }
 
   // ---------- district number labels ----------
   const labels = L.layerGroup();
@@ -365,6 +393,12 @@ function init(map) {
     CFG.committees.forEach((c, i) => { h += radioOpt('committee', i, false, swHatch(CFG.committeeHatch), c, 'data-c="' + i + '"'); });
     h += '<h2>' + esc(T.otherHeading) + '</h2>';
     h += checkOpt('bnt', swHatch(CFG.bntHatch), T.bnt) + checkOpt('sio', swLine(CFG.sio), T.sio) + checkOpt('pc', swLine(CFG.pc), T.pc);
+    if (CFG.majmin) {
+      const d = CFG.majmin.dots;
+      h += '<h2>' + esc(CFG.majmin.heading) + '</h2>' + checkOpt('majmin', '<span class="sw" style="background-image:radial-gradient(' +
+        d.color + ' ' + d.radius + 'px,transparent ' + (d.radius + 0.5) + 'px);background-size:' + (d.spacing / 1.5) + 'px ' + (d.spacing / 1.5) + 'px"></span>', CFG.majmin.label) +
+        '<div class="hint">Under 50% non-Hispanic white, 2020 Census</div>';
+    }
     if (CFG.bheard) h += '<h2>' + esc(CFG.bheard.heading) + '</h2>' + checkOpt('bheard',
       '<span class="sw" style="border:2px dashed ' + CFG.bheard.style.color + '"></span>', CFG.bheard.label);
     if (CFG.sweeps) {
@@ -392,7 +426,7 @@ function init(map) {
     setN('[data-k="__none"]', state.bill === null ? '' : U.filter(p => !p.billKeys[state.bill]).length);
   }
   function staticCounts() {
-    ['budget', 'bnt', 'sio', 'pc'].forEach(k => setN('[data-n="' + k + '"]', U.filter(p => p[k]).length));
+    ['budget', 'bnt', 'sio', 'pc', 'majmin'].forEach(k => setN('[data-n="' + k + '"]', U.filter(p => p[k]).length));
     CFG.committees.forEach((c, i) => setN('[data-c="' + i + '"]', U.filter(p => p.committees[i]).length));
     if (CFG.bheard) setN('[data-n="bheard"]', CFG.bheard.features.features.length);
   }
@@ -401,6 +435,7 @@ function init(map) {
     base.setStyle(baseStyle);
     committeeLayer.setStyle(committeeLayer.options.style);
     bntLayer.setStyle(bntLayer.options.style);
+    majminLayer.setStyle(majminLayer.options.style);
     sioLayer.setStyle(sioLayer.options.style);
     pcLayer.setStyle(pcLayer.options.style);
     if (bheardLayer) { if (state.bheard) bheardLayer.addTo(map); else map.removeLayer(bheardLayer); }
@@ -429,7 +464,7 @@ function init(map) {
 
   staticCounts();
   updateSweepCap();
-  [['bheard', CFG.bheard], ['sweeps', CFG.sweeps]].forEach(function (a) {
+  [['bheard', CFG.bheard], ['sweeps', CFG.sweeps], ['majmin', CFG.majmin]].forEach(function (a) {
     if (!a[1] || !a[1].showAtStart) return;
     state[a[0]] = true;
     const box = legendEl.querySelector('[data-flag="' + a[0] + '"]');
@@ -607,6 +642,23 @@ def load_sweeps():
                 showAtStart=SWEEPS_SHOW_AT_START), by_district
 
 
+def load_census():
+    """Returns {council district: % non-Hispanic white in 2020}, or {} if the NYC Planning file can't be read."""
+    try:
+        raw = fetch_bytes(CENSUS_FILE, CENSUS_URL)
+        df = pd.read_excel(io.BytesIO(raw), sheet_name="2020", usecols=["GeoType", "GeoID", "Pop1", "WNH"])
+    except Exception as e:  # noqa: BLE001
+        print(f"! Couldn't read the 2020 Census file ({type(e).__name__}); skipping the majority-minority layer")
+        return {}
+    out = {}
+    for r in df[df.GeoType == "CCD2023"].itertuples():
+        num = re.search(r"\d+", str(r.GeoID))
+        if num and r.Pop1 > 0:
+            out[int(num.group())] = round(100 * r.WNH / r.Pop1, 1)
+    print(f"2020 Census: {len(out)} council districts, {sum(v < 50 for v in out.values())} majority-minority")
+    return out
+
+
 def main():
     found = re.search(r"/d/([\w-]+)", SHEET_URL)
     if not found:
@@ -642,6 +694,7 @@ def main():
         print(f"! No Sheet row for district {d} (shown with no data)")
 
     sweeps_cfg, sweeps = load_sweeps()
+    white_nh = load_census()
     out, labelled = [], set()
     for f in FEATURES:
         d = f["district"]
@@ -660,6 +713,7 @@ def main():
             bnt=is_on(cell(rec, COLS["bnt"])), bntText=flag_text(cell(rec, COLS["bnt"])),
             sio=is_on(cell(rec, COLS["sio"])), sioText=flag_text(cell(rec, COLS["sio"])),
             pc=is_on(cell(rec, COLS["pc"])), pcText=flag_text(cell(rec, COLS["pc"])),
+            whiteNH=white_nh.get(d), majmin=white_nh.get(d, 100) < 50,
             sweeps=sweeps.get(d, {}).get("sweeps", 0), sweepPeople=sweeps.get(d, {}).get("people", 0),
             label=None if d in labelled else label_point(f["coordinates"], f["type"]),
         )
@@ -675,6 +729,8 @@ def main():
         committeeHatch=COMMITTEE_HATCH, bntHatch=BNT_HATCH, sio=SIO_OUTLINE, pc=PC_OUTLINE,
         fillOpacity=FILL_OPACITY, defaultBill=DEFAULT_BILL, labelsOn=SHOW_NUMBERS,
         heat=load_heat(), sweeps=sweeps_cfg, bheard=load_bheard(), tune=TUNE,
+        majmin=dict(heading=MAJMIN_HEADING, label=MAJMIN_LABEL, dots=MAJMIN_DOTS,
+                    showAtStart=MAJMIN_SHOW_AT_START) if white_nh else None,
         features={"type": "FeatureCollection", "features": out},
     )
 

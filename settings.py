@@ -118,4 +118,11 @@ SWEEPS_PERCENTILE = 90      # districts at or above this percentile get the dark
 SWEEPS_COLOR = "#BB1F00"
 SWEEPS_OPACITY = 0.85
 
+# --- Majority-minority districts (council districts under 50% non-Hispanic white, 2020 Census via NYC Planning) ---
+MAJMIN_SHOW_AT_START = False
+MAJMIN_HEADING = "Demographics"
+MAJMIN_LABEL = "Majority-minority districts"
+MAJMIN_DOTS = dict(color="#3d2b1f", spacing=8, radius=1.6)   # dot pattern; spacing and radius in pixels
+CENSUS_FILE = "data/nyc_decennialcensusdata_2010_2020_change-core-geographies.xlsx"   # optional local copy; downloaded if missing
+
 COUNCIL_FILE = "data/council.geojson"   # optional local copy; downloaded from NYC Open Data if missing
